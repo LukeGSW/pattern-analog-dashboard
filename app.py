@@ -24,6 +24,7 @@ from src.charts import (
 from src.data_fetcher import fetch_ohlc
 from src.outcomes import (
     baseline_path_quantiles,
+    build_signal_table,
     forward_paths,
     horizon_analysis,
     matches_table,
@@ -256,21 +257,50 @@ st.markdown(
 )
 
 summary_df, details = horizon_analysis(df, mr.end_indices, horizons, last_valid_end)
+signal_df, signals = build_signal_table(details, horizons)
+sig_by_h = {s["h"]: s for s in signals}
 
-num_cols = [c for c in summary_df.columns if c not in ("Orizzonte", "N match")]
+# Sintesi immediata: gli orizzonti con edge concorde (verde/rosso) in testata.
+strong = [s for s in signals if s["emoji"] in ("🟢", "🔴")]
+if strong:
+    txt = " · ".join(f"**{s['h']} barre** {s['emoji']} {s['label']}" for s in strong)
+    st.success(f"Edge concorde rispetto alla base → {txt}")
+else:
+    st.info(
+        "Nessun orizzonte mostra un edge concorde: dopo questa configurazione il "
+        "comportamento è in linea con la base o ambiguo (vedi colonna **Segnale**)."
+    )
+
+# Tabella 'edge-first': valori condizionati + delta vs base + verdetto.
 st.dataframe(
-    summary_df.style
-    .format({c: "{:+.2f}" for c in num_cols})
-    .background_gradient(cmap="RdYlGn",
-                         subset=["Media cond. %", "Mediana cond. %"], vmin=-10, vmax=10),
+    signal_df.style
+    .format({"Mediana %": "{:+.2f}", "Media %": "{:+.2f}", "% positivi": "{:.1f}",
+             "MFE %": "{:+.2f}", "MAE %": "{:+.2f}",
+             "Δ mediana": "{:+.2f}", "Δ media": "{:+.2f}", "Δ % pos.": "{:+.1f}"})
+    .background_gradient(cmap="RdYlGn", subset=["Δ mediana", "Δ media"], vmin=-3, vmax=3)
+    .background_gradient(cmap="RdYlGn", subset=["Δ % pos."], vmin=-10, vmax=10),
     use_container_width=True,
 )
+st.caption(
+    "🟢 le tre misure concordano · 🟡 segnali in conflitto (spesso la media inganna per "
+    "asimmetria) · 🔴 concorde al ribasso · ⚪ in linea con la base. "
+    "I **Δ** sono la differenza rispetto alla baseline: è lì che sta l'edge."
+)
+
+with st.expander("📋 Dettaglio completo: condizionato vs baseline"):
+    num_cols = [c for c in summary_df.columns if c not in ("Orizzonte", "N match")]
+    st.dataframe(
+        summary_df.style.format({c: "{:+.2f}" for c in num_cols}),
+        use_container_width=True,
+    )
 
 close_arr = df["close"].values
 tabs = st.tabs([f"{h} barre" for h in horizons])
 for tab, h in zip(tabs, horizons):
     with tab:
         d = details[h]
+        sg = sig_by_h[h]
+        st.markdown(f"### Segnale a {h} barre: {sg['emoji']} {sg['label']}")
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(
