@@ -140,3 +140,117 @@ def matches_table(df_ohlc: pd.DataFrame, mr, horizons) -> pd.DataFrame:
     if not out.empty:
         out = out.sort_values("Similarità %", ascending=False).reset_index(drop=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Indicatore di concordanza: verdetto DEFINITO per ogni orizzonte
+# ---------------------------------------------------------------------------
+# Soglie di materialità (dead-zone): sotto queste un edge è considerato trascurabile,
+# così il rumore non viene scambiato per segnale.
+HIT_TOL_PP = 3.0          # hit-rate: punti percentuali
+RET_TOL_STD_FRAC = 0.10   # rendimenti: frazione della dev.std condizionata
+RET_TOL_FLOOR = 0.10      # rendimenti: pavimento minimo (punti percentuali)
+
+
+def _sign(edge: float, tol: float) -> int:
+    """Segno dell'edge con zona morta: +1 / -1 / 0 (trascurabile o non finito)."""
+    if not np.isfinite(edge):
+        return 0
+    if edge > tol:
+        return 1
+    if edge < -tol:
+        return -1
+    return 0
+
+
+def _verdict(s_med: int, s_hit: int, s_mean: int):
+    """
+    Mappa ESAUSTIVA dei tre segni in un verdetto definito (emoji, etichetta).
+
+    Mediana e hit-rate sono le metriche robuste (la loro somma è 'robust'); la media è
+    secondaria perché può ingannare per asimmetria. Copre tutte le 27 combinazioni.
+    """
+    robust = s_med + s_hit
+    if robust == 2:
+        return ("🟢", "Rialzista concorde") if s_mean >= 0 \
+            else ("🟢", "Rialzista (media in controtendenza)")
+    if robust == -2:
+        return ("🔴", "Ribassista concorde") if s_mean <= 0 \
+            else ("🔴", "Ribassista (media in controtendenza)")
+    if robust == 1:
+        if s_mean >= 0:
+            return ("🟢", "Rialzista debole")
+        leader = "hit-rate" if s_hit > 0 else "mediana"
+        return ("🟡", f"Discorde: {leader} ↑ ma media ↓")
+    if robust == -1:
+        if s_mean <= 0:
+            return ("🔴", "Ribassista debole")
+        leader = "hit-rate" if s_hit < 0 else "mediana"
+        return ("🟡", f"Discorde: {leader} ↓ ma media ↑")
+    # robust == 0
+    if s_med == 0 and s_hit == 0:
+        if s_mean > 0:
+            return ("🟡", "Solo la media sopra la base")
+        if s_mean < 0:
+            return ("🟡", "Solo la media sotto la base")
+        return ("⚪", "In linea con la base")
+    # mediana e hit-rate di segno opposto → distribuzione asimmetrica
+    return ("🟡", "Discorde: mediana e hit-rate divergono")
+
+
+def classify_signal(cond: np.ndarray, base: np.ndarray) -> dict:
+    """
+    Verdetto definito per un orizzonte: confronta mediana, hit-rate e media condizionate
+    con la baseline e restituisce emoji + etichetta + i delta vs base.
+    """
+    cs, bs = summarize(cond), summarize(base)
+    if cs["n"] == 0 or bs["n"] == 0 or not np.isfinite(bs["median"]):
+        return dict(emoji="⚪", label="Dati insufficienti",
+                    d_median=np.nan, d_pos=np.nan, d_mean=np.nan)
+
+    d_median = cs["median"] - bs["median"]
+    d_pos = cs["pct_pos"] - bs["pct_pos"]
+    d_mean = cs["mean"] - bs["mean"]
+
+    ret_tol = max(RET_TOL_STD_FRAC * cs["std"], RET_TOL_FLOOR)
+    s_med = _sign(d_median, ret_tol)
+    s_hit = _sign(d_pos, HIT_TOL_PP)
+    s_mean = _sign(d_mean, ret_tol)
+
+    emoji, label = _verdict(s_med, s_hit, s_mean)
+    return dict(emoji=emoji, label=label,
+                d_median=d_median, d_pos=d_pos, d_mean=d_mean)
+
+
+def build_signal_table(details: dict, horizons):
+    """
+    Tabella riassuntiva 'edge-first' con indicatore di concordanza, costruita dai
+    dettagli già calcolati da horizon_analysis (nessuna ricomputazione).
+
+    Ritorna
+    -------
+    (table_df, signals)
+        table_df : DataFrame con valori condizionati, delta vs base e colonna 'Segnale'.
+        signals  : lista di dict {h, emoji, label} per la sintesi in testata e i tab.
+    """
+    rows, signals = [], []
+    for h in horizons:
+        d = details[h]
+        cond, base, mfe, mae = d["cond"], d["base"], d["mfe"], d["mae"]
+        cs = summarize(cond)
+        sig = classify_signal(cond, base)
+        rows.append({
+            "Orizzonte": f"{h} barre",
+            "N": cs["n"],
+            "Mediana %": cs["median"],
+            "Δ mediana": sig["d_median"],
+            "% positivi": cs["pct_pos"],
+            "Δ % pos.": sig["d_pos"],
+            "Media %": cs["mean"],
+            "Δ media": sig["d_mean"],
+            "MFE %": float(np.mean(mfe)) if mfe.size else np.nan,
+            "MAE %": float(np.mean(mae)) if mae.size else np.nan,
+            "Segnale": f"{sig['emoji']} {sig['label']}",
+        })
+        signals.append(dict(h=h, emoji=sig["emoji"], label=sig["label"]))
+    return pd.DataFrame(rows), signals
