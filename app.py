@@ -25,11 +25,12 @@ from src.data_fetcher import fetch_ohlc
 from src.outcomes import (
     baseline_path_quantiles,
     build_signal_table,
+    compute_robustness,
     forward_paths,
     horizon_analysis,
     matches_table,
 )
-from src.patterns import find_analogs, normalize_window
+from src.patterns import find_analogs, make_bar_weights, normalize_window
 
 # ---------------------------------------------------------------------------
 # Configurazione pagina
@@ -74,6 +75,11 @@ with st.sidebar:
     max_matches = st.slider("Match massimi", 50, 500, 200, 50)
     quality_floor = st.slider("Pavimento di qualità (similarità %)", 50, 95, 75, 5,
                               help="Sotto questa soglia gli analoghi sono considerati deboli.")
+    recency_decay = st.slider(
+        "Decadimento recenza (1 = pesi uguali)", 0.60, 1.00, 1.00, 0.05,
+        help="Sotto 1 le barre più recenti pesano di più nel match: rende il risultato "
+             "più stabile quando si allunga la finestra.",
+    )
 
     st.divider()
     st.caption("Dati: EODHD (adjusted) · cache 1h")
@@ -149,6 +155,7 @@ try:
         percentile=percentile,
         min_matches=min_matches,
         max_matches=max_matches,
+        bar_weights=make_bar_weights(pattern_len, recency_decay),
     )
 except ValueError as e:
     st.warning(f"Impossibile analizzare la configurazione attuale: {e}")
@@ -328,6 +335,50 @@ for tab, h in zip(tabs, horizons):
                 f"casi positivi **{cpos:.0f}%** vs {bpos:.0f}% · "
                 f"MFE medio {float(np.mean(d['mfe'])):+.2f}% / MAE medio {float(np.mean(d['mae'])):+.2f}%."
             )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Robustezza del segnale al variare di L
+# ---------------------------------------------------------------------------
+st.subheader("D — Robustezza al variare della finestra")
+st.markdown(
+    "Se il verdetto cambia molto aggiungendo o togliendo candele, l'edge **non è affidabile**. "
+    "Qui ricalcoliamo il segnale per una banda di lunghezze **L = 4…12** e ne misuriamo la "
+    "stabilità: una riga tutta dello stesso colore = robusto; una riga 'arcobaleno' = instabile. "
+    "Fidati solo dei segnali coerenti lungo la banda."
+)
+run_robust = st.checkbox("Esegui analisi di robustezza (più lenta: ricalcola su 9 finestre)")
+if run_robust:
+    l_values = list(range(4, 13))
+    with st.spinner("Calcolo il segnale su L = 4…12…"):
+        grid_df, quality = compute_robustness(
+            ohlc, df, l_values, horizons, last_valid_end, max_horizon,
+            percentile, min_matches, max_matches, recency_decay,
+        )
+    st.dataframe(grid_df, use_container_width=True)
+    st.caption(
+        "🟢 rialzista · 🔴 ribassista · 🟡 ambiguo/discorde · ⚪ in linea con la base · "
+        "⚠️ direzione instabile. La colonna **Robustezza** sintetizza la stabilità della riga."
+    )
+
+    quality_df = pd.DataFrame({
+        "L": list(quality.keys()),
+        "N match": [quality[k][0] for k in quality],
+        "Somiglianza mediana %": [quality[k][1] for k in quality],
+    })
+    st.markdown(
+        "**Numerosità e qualità dei match al crescere di L.** Con la soglia adattiva il "
+        "numero di match resta circa costante, mentre la **somiglianza tende a calare**: "
+        "allungare la finestra scambia contesto in cambio di fedeltà."
+    )
+    st.dataframe(
+        quality_df.style.format({"Somiglianza mediana %": "{:.1f}"})
+        .background_gradient(cmap="Blues", subset=["Somiglianza mediana %"]),
+        use_container_width=True, hide_index=True,
+    )
+
+st.divider()
 
 # ---------------------------------------------------------------------------
 # Metodologia
