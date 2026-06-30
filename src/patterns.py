@@ -62,6 +62,25 @@ def normalize_window(ohlc: np.ndarray):
     return norm.reshape(-1)                  # [o0,h0,l0,c0, o1,h1,l1,c1, ...]
 
 
+def make_bar_weights(pattern_len: int, decay: float = 1.0) -> np.ndarray:
+    """
+    Pesi per-barra per la pesatura di recenza nel calcolo della distanza.
+
+    La barra più recente pesa 1, le precedenti `decay**k` (k = distanza dalla più recente).
+    I pesi sono normalizzati a somma = pattern_len, così la scala di similarità resta
+    invariata. `decay = 1.0` → pesi uniformi (comportamento neutro).
+
+    Una recenza più marcata (decay < 1) rende il match più stabile quando si allunga la
+    finestra: le barre aggiunte "in coda" (più vecchie) perturbano meno il risultato.
+    """
+    L = pattern_len
+    if decay >= 1.0:
+        return np.ones(L)
+    exps = np.arange(L - 1, -1, -1)        # [L-1, ..., 1, 0] → la più recente ha esponente 0
+    w = decay ** exps
+    return w * (L / w.sum())
+
+
 def _similarity_from_distance(dist: np.ndarray, n_dims: int) -> np.ndarray:
     """
     Converte la distanza euclidea in similarita' % interpretabile.
@@ -83,6 +102,7 @@ def find_analogs(
     min_matches: int = 30,
     max_matches: int = 200,
     min_gap: int | None = None,
+    bar_weights: np.ndarray | None = None,
 ) -> MatchResult:
     """
     Trova le finestre storiche piu' simili alla configurazione corrente (ultime L barre).
@@ -104,6 +124,9 @@ def find_analogs(
     min_gap : int | None
         Distanza minima (barre) fra gli end-index di due match (diradamento delle
         sovrapposizioni). Default = pattern_len, cioe' finestre non sovrapposte.
+    bar_weights : np.ndarray | None
+        Pesi per-barra (lunghezza pattern_len) per la pesatura di recenza nella distanza.
+        None → pesi uniformi. Vedi make_bar_weights().
 
     Ritorno
     -------
@@ -111,6 +134,7 @@ def find_analogs(
     """
     if min_gap is None:
         min_gap = pattern_len
+    w = None if bar_weights is None else np.asarray(bar_weights, dtype=float)
 
     N = ohlc.shape[0]
     L = pattern_len
@@ -134,8 +158,13 @@ def find_analogs(
     distances = np.full(end_indices.size, np.nan)
     for k, e in enumerate(end_indices):
         win = normalize_window(ohlc[e - L + 1:e + 1])
-        if win is not None:
+        if win is None:
+            continue
+        if w is None:
             distances[k] = np.sqrt(np.sum((win - query) ** 2))
+        else:
+            per_bar = ((win - query).reshape(L, 4) ** 2).sum(axis=1)  # scarto² per barra
+            distances[k] = np.sqrt(np.sum(w * per_bar))
 
     valid = np.isfinite(distances)
     end_indices = end_indices[valid]
