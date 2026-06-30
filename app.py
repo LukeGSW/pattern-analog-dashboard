@@ -218,7 +218,7 @@ st.plotly_chart(
         last_bars["low"], last_bars["close"],
         f"{ticker} — ultime {pattern_len} barre",
     ),
-    use_container_width=True,
+    width="stretch",
 )
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ match_vecs = [v for v in match_vecs if v is not None]
 st.plotly_chart(
     normalized_overlay(mr.query_vector, match_vecs, pattern_len,
                        "Forma normalizzata: configurazione attuale vs analoghi"),
-    use_container_width=True,
+    width="stretch",
 )
 
 mt = matches_table(df, mr, horizons)
@@ -248,7 +248,7 @@ styled = (
     .background_gradient(cmap="RdYlGn", subset=ret_cols, vmin=-15, vmax=15)
     .background_gradient(cmap="Blues", subset=["Similarità %"])
 )
-st.dataframe(styled, use_container_width=True, height=300)
+st.dataframe(styled, width="stretch", height=300)
 
 st.divider()
 
@@ -286,7 +286,7 @@ st.dataframe(
              "Δ mediana": "{:+.2f}", "Δ media": "{:+.2f}", "Δ % pos.": "{:+.1f}"})
     .background_gradient(cmap="RdYlGn", subset=["Δ mediana", "Δ media"], vmin=-3, vmax=3)
     .background_gradient(cmap="RdYlGn", subset=["Δ % pos."], vmin=-10, vmax=10),
-    use_container_width=True,
+    width="stretch",
 )
 st.caption(
     "🟢 le tre misure concordano · 🟡 segnali in conflitto (spesso la media inganna per "
@@ -298,7 +298,7 @@ with st.expander("📋 Dettaglio completo: condizionato vs baseline"):
     num_cols = [c for c in summary_df.columns if c not in ("Orizzonte", "N match")]
     st.dataframe(
         summary_df.style.format({c: "{:+.2f}" for c in num_cols}),
-        use_container_width=True,
+        width="stretch",
     )
 
 close_arr = df["close"].values
@@ -313,14 +313,14 @@ for tab, h in zip(tabs, horizons):
             st.plotly_chart(
                 returns_histogram(d["cond"], d["base"], f"{h} barre",
                                   f"Distribuzione rendimenti a {h} barre"),
-                use_container_width=True,
+                width="stretch",
             )
         with col2:
             paths = forward_paths(close_arr, mr.end_indices, h)
             bq = baseline_path_quantiles(close_arr, h, last_valid_end)
             st.plotly_chart(
                 forward_fan(paths, bq, h, f"Traiettorie forward a {h} barre"),
-                use_container_width=True,
+                width="stretch",
             )
 
         if d["cond"].size:
@@ -356,7 +356,7 @@ if run_robust:
             ohlc, df, l_values, horizons, last_valid_end, max_horizon,
             percentile, min_matches, max_matches, recency_decay,
         )
-    st.dataframe(grid_df, use_container_width=True)
+    st.dataframe(grid_df, width="stretch")
     st.caption(
         "🟢 rialzista · 🔴 ribassista · 🟡 ambiguo/discorde · ⚪ in linea con la base · "
         "⚠️ direzione instabile. La colonna **Robustezza** sintetizza la stabilità della riga."
@@ -375,7 +375,7 @@ if run_robust:
     st.dataframe(
         quality_df.style.format({"Somiglianza mediana %": "{:.1f}"})
         .background_gradient(cmap="Blues", subset=["Somiglianza mediana %"]),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
 
 st.divider()
