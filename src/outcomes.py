@@ -14,6 +14,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.patterns import find_analogs, make_bar_weights
+
 
 def forward_returns(close: np.ndarray, end_indices: np.ndarray, horizon: int) -> np.ndarray:
     """Rendimenti % forward a 'horizon' barre dalla chiusura di ogni end-index."""
@@ -254,3 +256,77 @@ def build_signal_table(details: dict, horizons):
         })
         signals.append(dict(h=h, emoji=sig["emoji"], label=sig["label"]))
     return pd.DataFrame(rows), signals
+
+
+# ---------------------------------------------------------------------------
+# Robustezza del segnale al variare della lunghezza del pattern (banda di L)
+# ---------------------------------------------------------------------------
+def _robustness_verdict(emojis: list) -> str:
+    """
+    Sintetizza la stabilità di un orizzonte lungo la banda di L.
+
+    Se il verdetto cambia DIREZIONE (rialzo in alcune L, ribasso in altre) il segnale è
+    instabile e inaffidabile. Se invece resta coerente, è robusto.
+    """
+    tot = len(emojis)
+    up = emojis.count("🟢")
+    down = emojis.count("🔴")
+    amb = emojis.count("🟡")
+    flat = emojis.count("⚪")
+    if up and down:
+        return "⚠️ Instabile (cambia direzione con L)"
+    if up >= 0.6 * tot:
+        return f"🟢 Robusto rialzista ({up}/{tot})"
+    if down >= 0.6 * tot:
+        return f"🔴 Robusto ribassista ({down}/{tot})"
+    if up:
+        return f"🟡 Parziale rialzista ({up}/{tot})"
+    if down:
+        return f"🟡 Parziale ribassista ({down}/{tot})"
+    if amb >= flat:
+        return "🟡 Ambiguo (mediana/hit vs media)"
+    return "⚪ Nessun edge (stabile)"
+
+
+def compute_robustness(ohlc, df_ohlc, l_values, horizons, last_valid_end,
+                       max_horizon, percentile, min_matches, max_matches, decay=1.0):
+    """
+    Calcola il segnale per ogni orizzonte su una banda di lunghezze L, per misurarne la
+    STABILITÀ.
+
+    Ritorna
+    -------
+    (grid_df, quality)
+        grid_df : righe = orizzonti, colonne 'L=k' con l'emoji del segnale + 'Robustezza'.
+        quality : dict {L: (n_match, somiglianza_mediana)} per leggere il trade-off con L.
+    """
+    per_l, quality = {}, {}
+    for L in l_values:
+        weights = make_bar_weights(L, decay)
+        try:
+            mr = find_analogs(ohlc, pattern_len=L, max_horizon=max_horizon,
+                              percentile=percentile, min_matches=min_matches,
+                              max_matches=max_matches, bar_weights=weights)
+        except ValueError:
+            mr = None
+        if mr is None or mr.end_indices.size == 0:
+            per_l[L] = {h: "⚪" for h in horizons}
+            quality[L] = (0, float("nan"))
+            continue
+        _, details = horizon_analysis(df_ohlc, mr.end_indices, horizons, last_valid_end)
+        per_l[L] = {
+            h: classify_signal(details[h]["cond"], details[h]["base"])["emoji"]
+            for h in horizons
+        }
+        quality[L] = (int(mr.end_indices.size), float(np.median(mr.similarities)))
+
+    rows = []
+    for h in horizons:
+        emojis = [per_l[L][h] for L in l_values]
+        row = {"Orizzonte": f"{h} barre"}
+        for L in l_values:
+            row[f"L={L}"] = per_l[L][h]
+        row["Robustezza"] = _robustness_verdict(emojis)
+        rows.append(row)
+    grid_df = pd.DataFrame(rows).set_index("Orizzonte")
+    return grid_df, quality
